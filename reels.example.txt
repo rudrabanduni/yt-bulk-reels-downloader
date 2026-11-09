@@ -1,0 +1,17 @@
+# ====================================================================
+# Instagram Reels & Profiles Batch Input Example
+# ====================================================================
+# You can paste any of the following into this file (or your own reels.txt):
+#
+# 1. Single Reel / Post URLs:
+# https://www.instagram.com/reel/DeotUomNFBl/
+# https://www.instagram.com/p/DeM5KsRAR7Y/
+#
+# 2. Public Profile URLs (Bulk downloads all accessible Reels from that user):
+# https://www.instagram.com/mindforgeh/
+# @mindforgeh
+#
+# 3. WhatsApp Chat Exports / Notes:
+# The downloader automatically filters out timestamps and sender names:
+# [16/10/26, 10:55:07 PM] Friend Name : https://www.instagram.com/reel/DSbXdxoj4z8/
+# ====================================================================

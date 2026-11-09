@@ -1,0 +1,40 @@
+# ====================================================================
+# Git Ignore Configuration
+# ====================================================================
+
+# Media downloads and downloaded videos
+downloads/
+*.mp4
+*.mkv
+*.webm
+*.part
+*.ytdl
+
+# Personal session credentials & cookies (NEVER COMMIT CREDENTIALS)
+cookies.txt
+
+# Archive tracking (personal download state)
+archive.txt
+
+# Large binary engines (download.py automatically downloads the latest release on first run)
+yt-dlp.exe
+yt-dlp
+yt-dlp_macos
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.venv/
+env/
+venv/
+
+# OS and Editor metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.log
