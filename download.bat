@@ -2,21 +2,24 @@
 setlocal
 cd /d "%~dp0"
 
+set "TARGET_SCRIPT=%~dp0gui.py"
+if not "%~1"=="" set "TARGET_SCRIPT=%~dp0download.py"
+
 where py >nul 2>nul
 if %ERRORLEVEL% equ 0 (
-    py -u "%~dp0download.py" %*
+    py -u "%TARGET_SCRIPT%" %*
     goto end
 )
 
 where python >nul 2>nul
 if %ERRORLEVEL% equ 0 (
-    python -u "%~dp0download.py" %*
+    python -u "%TARGET_SCRIPT%" %*
     goto end
 )
 
 where python3 >nul 2>nul
 if %ERRORLEVEL% equ 0 (
-    python3 -u "%~dp0download.py" %*
+    python3 -u "%TARGET_SCRIPT%" %*
     goto end
 )
 

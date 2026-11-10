@@ -287,12 +287,12 @@ def extract_tokens_from_text(text, script_dir=None):
     return tokens
 
 
-def extract_profile_reels(username, max_pages=None):
+def extract_profile_reels(username, max_pages=None, log_fn=print):
     """
     Extracts all accessible video/Reel shortcodes from an Instagram user profile
     using Instagram's GraphQL timeline feed query.
     """
-    print(f"\n[PROFILE] Discovering accessible Reels from @{username}...")
+    log_fn(f"\n[PROFILE] Discovering accessible Reels from @{username}...")
     cursor = None
     reel_urls = []
     page = 0
@@ -325,7 +325,7 @@ def extract_profile_reels(username, max_pages=None):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="ignore"))
         except Exception as e:
-            print(f"  [!] Note: GraphQL page {page} fetch ended ({e}).")
+            log_fn(f"  [!] Note: GraphQL page {page} fetch ended ({e}).")
             break
 
         data_obj = data.get("data") if isinstance(data, dict) else None
@@ -333,9 +333,9 @@ def extract_profile_reels(username, max_pages=None):
             errors = data.get("errors") if isinstance(data, dict) else None
             if errors:
                 err_msg = errors[0].get("message", "Unknown error") if isinstance(errors, list) and errors else str(errors)
-                print(f"  [!] Instagram API note for @{username}: {err_msg}")
+                log_fn(f"  [!] Instagram API note for @{username}: {err_msg}")
             else:
-                print(f"  [!] No profile data returned for @{username} (profile may be private, restricted, or non-existent).")
+                log_fn(f"  [!] No profile data returned for @{username} (profile may be private, restricted, or non-existent).")
             break
 
         timeline = data_obj.get("xdt_api__v1__feed__user_timeline_graphql_connection")
@@ -359,7 +359,7 @@ def extract_profile_reels(username, max_pages=None):
                         reel_urls.append(reel_url)
                         page_new += 1
 
-        print(f"  [+] Page {page}: found {page_new} video entries (Total so far: {len(reel_urls)})")
+        log_fn(f"  [+] Page {page}: found {page_new} video entries (Total so far: {len(reel_urls)})")
 
         page_info = timeline.get("page_info") or {}
         if not page_info.get("has_next_page") or not page_info.get("end_cursor"):
@@ -369,7 +369,7 @@ def extract_profile_reels(username, max_pages=None):
         if max_pages and page >= max_pages:
             break
 
-    print(f"[PROFILE] Finished discovery: {len(reel_urls)} Reels found for @{username}.")
+    log_fn(f"[PROFILE] Finished discovery: {len(reel_urls)} Reels found for @{username}.")
     return reel_urls
 
 
@@ -407,12 +407,13 @@ def sync_archive(archive_path, dest_path):
         pass
 
 
-def download_batch_with_ytdlp(urls, dest_folder, archive_file, ytdlp_path, cookies_file=None):
+def download_batch_with_ytdlp(urls, dest_folder, archive_file, ytdlp_path, cookies_file=None, log_fn=print):
     """
     Downloads a list of URLs using yt-dlp in bulk with archive deduplication.
+    Streams output in real-time line by line to log_fn.
     """
     if not urls:
-        print("[!] No URLs to download.")
+        log_fn("[!] No URLs to download.")
         return 0
 
     dest_path = Path(dest_folder).resolve()
@@ -445,11 +446,25 @@ def download_batch_with_ytdlp(urls, dest_folder, archive_file, ytdlp_path, cooki
         if cookies_file and os.path.isfile(cookies_file):
             cmd.extend(["--cookies", str(Path(cookies_file).resolve())])
 
-        print(f"\n[DOWNLOAD] Starting bulk download of {len(urls)} item(s)...")
-        print(f"[DOWNLOAD] Destination: {dest_path}")
-        print(f"[DOWNLOAD] Archive:     {archive_path}\n")
+        log_fn(f"\n[DOWNLOAD] Starting bulk download of {len(urls)} item(s)...")
+        log_fn(f"[DOWNLOAD] Destination: {dest_path}")
+        log_fn(f"[DOWNLOAD] Archive:     {archive_path}\n")
 
-        proc = subprocess.run(cmd)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            encoding="utf-8",
+            errors="replace"
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                line_str = line.rstrip()
+                if line_str:
+                    log_fn(line_str)
+        proc.wait()
         return proc.returncode
     finally:
         try:
