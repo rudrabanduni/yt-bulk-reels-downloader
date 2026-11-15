@@ -262,20 +262,6 @@ class DownloaderGUI:
         )
         self.btn_open_folder.pack(side="left", padx=(0, 10))
 
-        self.btn_cookies = tk.Button(
-            action_frame,
-            text="🍪  Import cookies.txt",
-            command=self._import_cookies,
-            font=("Segoe UI" if self.is_win else "Helvetica", 9),
-            bg="#F1F5F9",
-            fg=self.text_dark,
-            relief="flat",
-            padx=10,
-            pady=7,
-            cursor="hand2",
-        )
-        self.btn_cookies.pack(side="left", padx=(0, 10))
-
         self.btn_update = tk.Button(
             action_frame,
             text="🔄  Check Updates",
@@ -289,17 +275,6 @@ class DownloaderGUI:
             cursor="hand2",
         )
         self.btn_update.pack(side="right")
-
-        # Cookie Status Badge
-        self.cookie_status_lbl = tk.Label(
-            main_frame,
-            text="",
-            font=("Segoe UI" if self.is_win else "Helvetica", 8),
-            bg=self.bg_main,
-            anchor="w",
-        )
-        self.cookie_status_lbl.pack(fill="x", pady=(0, 6))
-        self._update_cookie_status()
 
         # 5. Live Log / Progress Console
         log_frame = tk.LabelFrame(
@@ -508,31 +483,19 @@ class DownloaderGUI:
         count = info.get("count", 0)
         target_folder = info.get("target_folder")
 
-        if err == "cookies_needed":
-            self.status_bar.config(text="Status: 0 videos downloaded — cookies.txt required for profiles")
-            messagebox.showwarning(
-                "Instagram Login Required",
-                "Instagram blocks anonymous crawling of creator profile feeds (HTTP 401).\n\n"
-                "HOW TO FIX:\n"
-                "1. Export your cookies using 'Get cookies.txt LOCALLY' extension in your browser.\n"
-                "2. Click '🍪 Import cookies.txt' in this app.\n"
-                "3. Click 'Start Download' again!\n\n"
-                "INSTANT ALTERNATIVE (NO LOGIN NEEDED):\n"
-                "You can download any individual Reel right now without login!\n"
-                "Select 'Single Reel or Multiple Reel Links' above, paste the Reel URLs, and click 'Start Download'."
-            )
-        elif err == "empty_profile":
-            self.status_bar.config(text="Status: 0 videos found (Profile may be private or empty)")
-            messagebox.showinfo("Notice", "No accessible videos could be extracted for this profile.")
-        elif count > 0:
+        if count > 0:
             self.status_bar.config(text=f"Status: Completed! ({count} videos available)")
             self.log(f"\n[SUCCESS] Completed! All media saved to: {target_folder}\n")
             messagebox.showinfo(
                 "Download Completed",
                 f"Successfully processed your request!\n\nTotal videos: {count}\nClick 'Open Downloads' to view them."
             )
+        elif err == "no_urls":
+            self.status_bar.config(text="Status: No valid URLs entered.")
+            messagebox.showwarning("Notice", "No valid Instagram links or usernames were found in your input.")
         else:
-            self.status_bar.config(text="Status: Finished.")
+            self.status_bar.config(text="Status: 0 videos downloaded.")
+            messagebox.showinfo("Notice", "No accessible Reels could be downloaded.\n\nPlease check the progress log below for details.")
 
     def _execute_download(self, mode, raw_input):
         script_dir = SCRIPT_DIR
@@ -600,26 +563,15 @@ class DownloaderGUI:
                 self.last_download_info = {
                     "count": 0,
                     "target_folder": None,
-                    "error_type": "cookies_needed" if not cookies_file else "empty_profile",
+                    "error_type": "empty_profile",
                 }
                 self.log(f"\n" + "=" * 58)
                 self.log(f"   [!] 0 Reels could be downloaded for @{username}")
                 self.log(f"=" * 58)
-                if not cookies_file:
-                    self.log(f"[REASON] Instagram blocks anonymous profile crawling (HTTP 401).")
-                    self.log(f"Instagram requires login cookies to read a creator's profile feed.\n")
-                    self.log(f"HOW TO SOLVE:")
-                    self.log(f"  1. Export your cookies using the free Chrome/Edge/Firefox extension:")
-                    self.log(f"     'Get cookies.txt LOCALLY' (while logged in to Instagram).")
-                    self.log(f"  2. Click the '🍪 Import cookies.txt' button above and select the file.")
-                    self.log(f"  3. Click 'Start Download' again to download all profile reels!\n")
-                    self.log(f"INSTANT ALTERNATIVE (NO LOGIN REQUIRED):")
-                    self.log(f"  Single Reels and multiple Reel links do NOT require any login!")
-                    self.log(f"  Select 'Single Reel or Multiple Reel Links' above, paste the Reel URLs,")
-                    self.log(f"  and download them instantly!\n")
-                else:
-                    self.log(f"[REASON] The session in your 'cookies.txt' did not return media.")
-                    self.log(f"Please verify the profile is public or export fresh cookies.\n")
+                self.log(f"Please check:")
+                self.log(f"  • Ensure the username is spelled correctly and the account is active.")
+                self.log(f"  • Make sure the account is PUBLIC (private profiles restrict video access).")
+                self.log(f"  • Verify that the account has video Reels posted.\n")
 
         # 2. Reels Mode
         elif mode == "reels":

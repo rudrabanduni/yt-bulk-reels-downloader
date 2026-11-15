@@ -300,19 +300,80 @@ def load_cookiejar(cookies_file=None):
         return None
 
 
+def ensure_instaloader():
+    """Ensures instaloader is installed for reliable profile crawling."""
+    try:
+        import instaloader
+        return True
+    except ImportError:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "instaloader", "--quiet"], timeout=60)
+            import instaloader
+            return True
+        except Exception:
+            return False
+
+
 def extract_profile_reels(username, max_pages=None, cookies_file=None, log_fn=print):
     """
-    Extracts all accessible video/Reel shortcodes from an Instagram user profile
-    using Instagram's GraphQL timeline feed query with optional session cookies.
+    Extracts all accessible video/Reel URLs from an Instagram user profile.
+    Uses Instaloader for reliable, cookie-free profile discovery with automatic
+    fallback to GraphQL API.
     """
     log_fn(f"\n[PROFILE] Discovering accessible Reels from @{username}...")
 
+    # Method 1: Instaloader (High reliability, works without login for public profiles)
+    if ensure_instaloader():
+        try:
+            import instaloader
+            L = instaloader.Instaloader(quiet=True, download_pictures=False, download_videos=False)
+            
+            # Optionally attach cookies if provided
+            if cookies_file and os.path.isfile(cookies_file):
+                try:
+                    cj = load_cookiejar(cookies_file)
+                    if cj:
+                        for c in cj:
+                            if "instagram.com" in c.domain:
+                                L.context._session.cookies.set_cookie(c)
+                        log_fn(f"[AUTH] Applied session cookies from {Path(cookies_file).name}")
+                except Exception:
+                    pass
+
+            profile = instaloader.Profile.from_username(L.context, username)
+            log_fn(f"[PROFILE] Connected to @{username} ({profile.full_name or 'Public Profile'})")
+
+            if profile.is_private:
+                log_fn(f"[!] Profile @{username} is PRIVATE. Instagram restricts access to follower accounts only.")
+                return []
+
+            reel_urls = []
+            for post in profile.get_posts():
+                if post.is_video:
+                    url = f"https://www.instagram.com/reel/{post.shortcode}/"
+                    if url not in reel_urls:
+                        reel_urls.append(url)
+                        log_fn(f"  [+] Found Reel: {url}")
+
+            log_fn(f"[PROFILE] Finished discovery: {len(reel_urls)} Reels found for @{username}.")
+            return reel_urls
+
+        except instaloader.exceptions.ProfileNotExistsException:
+            log_fn(f"\n[ERROR] The profile @{username} does not exist on Instagram.")
+            log_fn(f"        Please check the username or link (the account may have been renamed or deleted).\n")
+            return []
+        except instaloader.exceptions.PrivateProfileNotFollowedException:
+            log_fn(f"\n[!] Profile @{username} is private. Cannot access media without an approved follower session.\n")
+            return []
+        except Exception as e:
+            log_fn(f"  [*] Note: Direct profile scan encountered ({e}). Trying fallback method...")
+
+    # Method 2: GraphQL Fallback
     cj = load_cookiejar(cookies_file)
     if cj:
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-        cookies_dict = {c.name: c.value for c in cj}
+        cookies_dict = {c.name: c.value for c in cj if "instagram.com" in c.domain}
         csrf = cookies_dict.get("csrftoken", "")
-        log_fn(f"[AUTH] Applied session cookies from {Path(cookies_file).name}")
     else:
         opener = urllib.request.build_opener()
         csrf = ""
@@ -357,12 +418,7 @@ def extract_profile_reels(username, max_pages=None, cookies_file=None, log_fn=pr
         except Exception as e:
             err_str = str(e)
             if "401" in err_str or "Unauthorized" in err_str or "403" in err_str:
-                log_fn(f"  [!] Instagram API responded: HTTP 401 Unauthorized.")
-                if not cj:
-                    log_fn(f"  [!] Instagram requires login cookies to discover profile feeds.")
-                    log_fn(f"  [!] To enable profile crawling, add a 'cookies.txt' file.")
-                else:
-                    log_fn(f"  [!] The session in your 'cookies.txt' may be expired or invalid.")
+                log_fn(f"  [!] Instagram GraphQL API responded: HTTP 401 Unauthorized.")
             else:
                 log_fn(f"  [!] Note: GraphQL page {page} fetch ended ({e}).")
             break
@@ -374,7 +430,7 @@ def extract_profile_reels(username, max_pages=None, cookies_file=None, log_fn=pr
                 err_msg = errors[0].get("message", "Unknown error") if isinstance(errors, list) and errors else str(errors)
                 log_fn(f"  [!] Instagram API note for @{username}: {err_msg}")
             else:
-                log_fn(f"  [!] No profile data returned for @{username} (profile may be private, restricted, or non-existent).")
+                log_fn(f"  [!] No profile data returned for @{username} (profile may be private or restricted).")
             break
 
         timeline = data_obj.get("xdt_api__v1__feed__user_timeline_graphql_connection")
@@ -705,19 +761,8 @@ def main():
                 cookies_file=cookies_file,
             )
         else:
-            print(f"[!] 0 Reels discovered for @{username}.")
-            if not cookies_file:
-                print(f"[!] Instagram requires session cookies to crawl full creator profiles.")
-                print(f"[!] Add 'cookies.txt' to this folder or download individual Reel links.")
-            else:
-                print(f"    Attempting fallback with yt-dlp...")
-                download_batch_with_ytdlp(
-                    urls=[prof_item["url"]],
-                    dest_folder=profile_dest,
-                    archive_file=profile_archive,
-                    ytdlp_path=ytdlp_exe,
-                    cookies_file=cookies_file,
-                )
+            print(f"[!] 0 accessible Reels discovered for @{username}.")
+            print(f"    Please verify that the profile username is correct and public.")
             if profile_dest.is_dir() and not any(profile_dest.iterdir()):
                 try:
                     profile_dest.rmdir()

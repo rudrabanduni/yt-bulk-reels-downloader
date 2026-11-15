@@ -1,0 +1,2 @@
+# Instagram Reels & Profiles Bulk Downloader Dependencies
+instaloader>=4.10
