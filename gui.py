@@ -262,6 +262,20 @@ class DownloaderGUI:
         )
         self.btn_open_folder.pack(side="left", padx=(0, 10))
 
+        self.btn_cookies = tk.Button(
+            action_frame,
+            text="🍪  Import cookies.txt",
+            command=self._import_cookies,
+            font=("Segoe UI" if self.is_win else "Helvetica", 9),
+            bg="#F1F5F9",
+            fg=self.text_dark,
+            relief="flat",
+            padx=10,
+            pady=7,
+            cursor="hand2",
+        )
+        self.btn_cookies.pack(side="left", padx=(0, 10))
+
         self.btn_update = tk.Button(
             action_frame,
             text="🔄  Check Updates",
@@ -275,6 +289,17 @@ class DownloaderGUI:
             cursor="hand2",
         )
         self.btn_update.pack(side="right")
+
+        # Cookie Status Badge
+        self.cookie_status_lbl = tk.Label(
+            main_frame,
+            text="",
+            font=("Segoe UI" if self.is_win else "Helvetica", 8),
+            bg=self.bg_main,
+            anchor="w",
+        )
+        self.cookie_status_lbl.pack(fill="x", pady=(0, 6))
+        self._update_cookie_status()
 
         # 5. Live Log / Progress Console
         log_frame = tk.LabelFrame(
@@ -372,6 +397,40 @@ class DownloaderGUI:
             self.text_input.delete("1.0", "end")
             self.text_input.insert("1.0", f)
 
+    def _update_cookie_status(self):
+        cookies_file = SCRIPT_DIR / "cookies.txt"
+        if cookies_file.is_file():
+            self.cookie_status_lbl.config(
+                text="✅ Session cookies active (cookies.txt loaded) — Full profile crawling enabled.",
+                fg="#16A34A"
+            )
+        else:
+            self.cookie_status_lbl.config(
+                text="ℹ️ No cookies.txt found — Individual Reels download freely; full creator profiles require cookies.txt.",
+                fg="#64748B"
+            )
+
+    def _import_cookies(self):
+        import shutil
+        f = filedialog.askopenfilename(
+            title="Select cookies.txt exported from your browser",
+            filetypes=[("Text / Cookie Files", "*.txt"), ("All Files", "*.*")],
+            initialdir=str(Path.home() / "Downloads"),
+        )
+        if not f:
+            return
+        try:
+            target = SCRIPT_DIR / "cookies.txt"
+            shutil.copyfile(f, target)
+            self._update_cookie_status()
+            self.log(f"[AUTH] Successfully imported cookies.txt from: {f}")
+            messagebox.showinfo(
+                "Cookies Imported",
+                "Successfully loaded your Instagram cookies!\n\nYou can now bulk download full profiles."
+            )
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Could not copy cookies file: {e}")
+
     def _open_downloads_folder(self):
         dl_folder = SCRIPT_DIR / "downloads"
         dl_folder.mkdir(parents=True, exist_ok=True)
@@ -429,8 +488,9 @@ class DownloaderGUI:
             return
 
         self.is_downloading = True
+        self.last_download_info = {"count": 0, "target_folder": None, "error_type": None}
         self.btn_download.config(text="⏳ Downloading...", state="disabled")
-        self.status_bar.config(text="Status: Downloading in background...")
+        self.status_bar.config(text="Status: Processing in background...")
 
         def worker():
             try:
@@ -443,8 +503,36 @@ class DownloaderGUI:
 
     def _on_download_complete(self):
         self.btn_download.config(text="⬇️  Start Download", state="normal")
-        self.status_bar.config(text="Status: Completed!")
-        self.log("\n[SUCCESS] Task completed! Click 'Open Downloads' to view your videos.\n")
+        info = getattr(self, "last_download_info", {})
+        err = info.get("error_type")
+        count = info.get("count", 0)
+        target_folder = info.get("target_folder")
+
+        if err == "cookies_needed":
+            self.status_bar.config(text="Status: 0 videos downloaded — cookies.txt required for profiles")
+            messagebox.showwarning(
+                "Instagram Login Required",
+                "Instagram blocks anonymous crawling of creator profile feeds (HTTP 401).\n\n"
+                "HOW TO FIX:\n"
+                "1. Export your cookies using 'Get cookies.txt LOCALLY' extension in your browser.\n"
+                "2. Click '🍪 Import cookies.txt' in this app.\n"
+                "3. Click 'Start Download' again!\n\n"
+                "INSTANT ALTERNATIVE (NO LOGIN NEEDED):\n"
+                "You can download any individual Reel right now without login!\n"
+                "Select 'Single Reel or Multiple Reel Links' above, paste the Reel URLs, and click 'Start Download'."
+            )
+        elif err == "empty_profile":
+            self.status_bar.config(text="Status: 0 videos found (Profile may be private or empty)")
+            messagebox.showinfo("Notice", "No accessible videos could be extracted for this profile.")
+        elif count > 0:
+            self.status_bar.config(text=f"Status: Completed! ({count} videos available)")
+            self.log(f"\n[SUCCESS] Completed! All media saved to: {target_folder}\n")
+            messagebox.showinfo(
+                "Download Completed",
+                f"Successfully processed your request!\n\nTotal videos: {count}\nClick 'Open Downloads' to view them."
+            )
+        else:
+            self.status_bar.config(text="Status: Finished.")
 
     def _execute_download(self, mode, raw_input):
         script_dir = SCRIPT_DIR
@@ -467,7 +555,6 @@ class DownloaderGUI:
             if item and item["type"] == "profile":
                 username = item["username"]
             else:
-                # Try fallback extraction of handle
                 import re
                 m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)", target)
                 if m:
@@ -482,7 +569,7 @@ class DownloaderGUI:
             self.log(f"\n==========================================================")
             self.log(f"       Processing Profile Bulk Download: @{username}")
             self.log(f"==========================================================")
-            reels = download.extract_profile_reels(username, log_fn=self.log)
+            reels = download.extract_profile_reels(username, cookies_file=cookies_file, log_fn=self.log)
 
             profile_dest = downloads_base / username
             profile_archive = profile_dest / "archive.txt"
@@ -496,22 +583,49 @@ class DownloaderGUI:
                     cookies_file=cookies_file,
                     log_fn=self.log,
                 )
+                v_list = list(profile_dest.glob("*.mp4")) + list(profile_dest.glob("*.webm")) + list(profile_dest.glob("*.mkv"))
+                self.last_download_info = {
+                    "count": len(v_list),
+                    "target_folder": profile_dest,
+                    "error_type": None,
+                }
             else:
-                self.log(f"[!] No Reels found via GraphQL. Querying profile directly with yt-dlp...")
-                prof_url = f"https://www.instagram.com/{username}/"
-                download.download_batch_with_ytdlp(
-                    urls=[prof_url],
-                    dest_folder=profile_dest,
-                    archive_file=profile_archive,
-                    ytdlp_path=ytdlp_exe,
-                    cookies_file=cookies_file,
-                    log_fn=self.log,
-                )
+                # Do NOT create empty folder or run broken yt-dlp profile URL
+                if profile_dest.is_dir() and not any(profile_dest.iterdir()):
+                    try:
+                        profile_dest.rmdir()
+                    except Exception:
+                        pass
+
+                self.last_download_info = {
+                    "count": 0,
+                    "target_folder": None,
+                    "error_type": "cookies_needed" if not cookies_file else "empty_profile",
+                }
+                self.log(f"\n" + "=" * 58)
+                self.log(f"   [!] 0 Reels could be downloaded for @{username}")
+                self.log(f"=" * 58)
+                if not cookies_file:
+                    self.log(f"[REASON] Instagram blocks anonymous profile crawling (HTTP 401).")
+                    self.log(f"Instagram requires login cookies to read a creator's profile feed.\n")
+                    self.log(f"HOW TO SOLVE:")
+                    self.log(f"  1. Export your cookies using the free Chrome/Edge/Firefox extension:")
+                    self.log(f"     'Get cookies.txt LOCALLY' (while logged in to Instagram).")
+                    self.log(f"  2. Click the '🍪 Import cookies.txt' button above and select the file.")
+                    self.log(f"  3. Click 'Start Download' again to download all profile reels!\n")
+                    self.log(f"INSTANT ALTERNATIVE (NO LOGIN REQUIRED):")
+                    self.log(f"  Single Reels and multiple Reel links do NOT require any login!")
+                    self.log(f"  Select 'Single Reel or Multiple Reel Links' above, paste the Reel URLs,")
+                    self.log(f"  and download them instantly!\n")
+                else:
+                    self.log(f"[REASON] The session in your 'cookies.txt' did not return media.")
+                    self.log(f"Please verify the profile is public or export fresh cookies.\n")
 
         # 2. Reels Mode
         elif mode == "reels":
             tokens = download.extract_tokens_from_text(raw_input, script_dir)
             if not tokens:
+                self.last_download_info = {"count": 0, "target_folder": None, "error_type": "no_urls"}
                 self.log("[!] No valid URLs found in your input.")
                 return
 
@@ -528,6 +642,12 @@ class DownloaderGUI:
                 cookies_file=cookies_file,
                 log_fn=self.log,
             )
+            v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
+            self.last_download_info = {
+                "count": len(v_list),
+                "target_folder": reels_dest,
+                "error_type": None,
+            }
 
         # 3. File Mode
         elif mode == "file":
@@ -568,6 +688,12 @@ class DownloaderGUI:
                 cookies_file=cookies_file,
                 log_fn=self.log,
             )
+            v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
+            self.last_download_info = {
+                "count": len(v_list),
+                "target_folder": reels_dest,
+                "error_type": None,
+            }
 
 
 def main():

@@ -13,6 +13,7 @@ import re
 import json
 import urllib.request
 import urllib.parse
+import http.cookiejar
 import subprocess
 import tempfile
 import platform
@@ -287,12 +288,41 @@ def extract_tokens_from_text(text, script_dir=None):
     return tokens
 
 
-def extract_profile_reels(username, max_pages=None, log_fn=print):
+def load_cookiejar(cookies_file=None):
+    """Loads a Netscape/Mozilla formatted cookies.txt into a CookieJar."""
+    if not cookies_file or not os.path.isfile(cookies_file):
+        return None
+    try:
+        cj = http.cookiejar.MozillaCookieJar(str(cookies_file))
+        cj.load(ignore_discard=True, ignore_expires=True)
+        return cj
+    except Exception:
+        return None
+
+
+def extract_profile_reels(username, max_pages=None, cookies_file=None, log_fn=print):
     """
     Extracts all accessible video/Reel shortcodes from an Instagram user profile
-    using Instagram's GraphQL timeline feed query.
+    using Instagram's GraphQL timeline feed query with optional session cookies.
     """
     log_fn(f"\n[PROFILE] Discovering accessible Reels from @{username}...")
+
+    cj = load_cookiejar(cookies_file)
+    if cj:
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        cookies_dict = {c.name: c.value for c in cj}
+        csrf = cookies_dict.get("csrftoken", "")
+        log_fn(f"[AUTH] Applied session cookies from {Path(cookies_file).name}")
+    else:
+        opener = urllib.request.build_opener()
+        csrf = ""
+
+    headers = dict(GRAPHQL_HEADERS)
+    if csrf:
+        headers["X-CSRFToken"] = csrf
+    headers["Referer"] = f"https://www.instagram.com/{username}/"
+    headers["X-Requested-With"] = "XMLHttpRequest"
+
     cursor = None
     reel_urls = []
     page = 0
@@ -319,13 +349,22 @@ def extract_profile_reels(username, max_pages=None, log_fn=print):
             f"https://www.instagram.com/graphql/query?"
             f"doc_id={DOC_ID_USER_TIMELINE}&variables={urllib.parse.quote(json.dumps(vars_dict))}"
         )
-        req = urllib.request.Request(query_url, headers=GRAPHQL_HEADERS)
+        req = urllib.request.Request(query_url, headers=headers)
 
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with opener.open(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="ignore"))
         except Exception as e:
-            log_fn(f"  [!] Note: GraphQL page {page} fetch ended ({e}).")
+            err_str = str(e)
+            if "401" in err_str or "Unauthorized" in err_str or "403" in err_str:
+                log_fn(f"  [!] Instagram API responded: HTTP 401 Unauthorized.")
+                if not cj:
+                    log_fn(f"  [!] Instagram requires login cookies to discover profile feeds.")
+                    log_fn(f"  [!] To enable profile crawling, add a 'cookies.txt' file.")
+                else:
+                    log_fn(f"  [!] The session in your 'cookies.txt' may be expired or invalid.")
+            else:
+                log_fn(f"  [!] Note: GraphQL page {page} fetch ended ({e}).")
             break
 
         data_obj = data.get("data") if isinstance(data, dict) else None
@@ -652,7 +691,7 @@ def main():
     # 2. Process each profile
     for username, prof_item in classified_profiles.items():
         print(f"\n>>> Processing profile: @{username} ({prof_item['url']})")
-        profile_reels = extract_profile_reels(username)
+        profile_reels = extract_profile_reels(username, cookies_file=cookies_file)
 
         profile_dest = downloads_base / username
         profile_archive = profile_dest / "archive.txt"
@@ -666,16 +705,24 @@ def main():
                 cookies_file=cookies_file,
             )
         else:
-            print(f"[!] No reels extracted via GraphQL for @{username}.")
-            print(f"    Attempting fallback: querying profile with yt-dlp directly...")
-            # Fallback to direct yt-dlp profile attempt
-            download_batch_with_ytdlp(
-                urls=[prof_item["url"]],
-                dest_folder=profile_dest,
-                archive_file=profile_archive,
-                ytdlp_path=ytdlp_exe,
-                cookies_file=cookies_file,
-            )
+            print(f"[!] 0 Reels discovered for @{username}.")
+            if not cookies_file:
+                print(f"[!] Instagram requires session cookies to crawl full creator profiles.")
+                print(f"[!] Add 'cookies.txt' to this folder or download individual Reel links.")
+            else:
+                print(f"    Attempting fallback with yt-dlp...")
+                download_batch_with_ytdlp(
+                    urls=[prof_item["url"]],
+                    dest_folder=profile_dest,
+                    archive_file=profile_archive,
+                    ytdlp_path=ytdlp_exe,
+                    cookies_file=cookies_file,
+                )
+            if profile_dest.is_dir() and not any(profile_dest.iterdir()):
+                try:
+                    profile_dest.rmdir()
+                except Exception:
+                    pass
 
     print("\n[ALL TASKS COMPLETED] Check the 'downloads/' folder for saved media.\n")
 
