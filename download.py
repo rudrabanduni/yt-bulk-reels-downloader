@@ -47,12 +47,14 @@ def get_clipboard_text():
     """Reads text from system clipboard cross-platform."""
     try:
         if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 timeout=5,
+                creationflags=creationflags,
             )
             if res.returncode == 0:
                 return res.stdout.strip()
@@ -348,15 +350,68 @@ def extract_profile_reels(username, max_pages=None, cookies_file=None, log_fn=pr
                 return []
 
             reel_urls = []
-            for post in profile.get_posts():
-                if post.is_video:
-                    url = f"https://www.instagram.com/reel/{post.shortcode}/"
-                    if url not in reel_urls:
-                        reel_urls.append(url)
-                        log_fn(f"  [+] Found Reel: {url}")
 
-            log_fn(f"[PROFILE] Finished discovery: {len(reel_urls)} Reels found for @{username}.")
-            return reel_urls
+            # 1a. Fast direct timeline iteration (extracts shortcodes without crashing on post metadata)
+            try:
+                from instaloader import NodeIterator
+                page_data = L.context.get_page_data(f"{username}/")
+                user = next((data["xig_user_by_username"] for data in page_data
+                             if "polaris_ordered_timeline_connection" in (data.get("xig_user_by_username") or {})),
+                            None)
+
+                if user and "polaris_ordered_timeline_connection" in user:
+                    timeline = user["polaris_ordered_timeline_connection"]
+                    iterator = NodeIterator(
+                        context=L.context,
+                        edge_extractor=lambda d: d["data"]["node"]["polaris_ordered_timeline_connection"],
+                        node_wrapper=lambda n: n,
+                        query_variables={
+                            "id": user["id"],
+                            "__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider": False,
+                        },
+                        query_referer=f"https://www.instagram.com/{username}/",
+                        is_first=lambda item, first: False,
+                        doc_id="28904005159232689",
+                        query_hash=None,
+                        first_data=timeline,
+                        web_api=True,
+                    )
+
+                    for node in iterator:
+                        code = node.get("code")
+                        typename = node.get("__typename", "")
+                        is_video = ("Video" in typename) or node.get("is_video") or (typename != "XIGPolarisImageMedia")
+                        if code and is_video:
+                            url = f"https://www.instagram.com/reel/{code}/"
+                            if url not in reel_urls:
+                                reel_urls.append(url)
+                                log_fn(f"  [+] Found Reel: {url}")
+                                if max_pages and len(reel_urls) >= (max_pages * 12):
+                                    break
+
+                    if reel_urls:
+                        log_fn(f"[PROFILE] Discovery complete: {len(reel_urls)} Reels found for @{username}.")
+                        return reel_urls
+            except Exception as e:
+                log_fn(f"  [*] Note: Direct timeline stream notice ({e}). Trying post iteration...")
+
+            # 1b. Fallback post iteration with individual exception protection
+            try:
+                for post in profile.get_posts():
+                    try:
+                        if post.is_video:
+                            url = f"https://www.instagram.com/reel/{post.shortcode}/"
+                            if url not in reel_urls:
+                                reel_urls.append(url)
+                                log_fn(f"  [+] Found Reel: {url}")
+                    except Exception:
+                        continue
+            except Exception as e:
+                log_fn(f"  [*] Note: Profile post stream ended ({e}).")
+
+            if reel_urls:
+                log_fn(f"[PROFILE] Discovery complete: {len(reel_urls)} Reels found for @{username}.")
+                return reel_urls
 
         except instaloader.exceptions.ProfileNotExistsException:
             log_fn(f"\n[ERROR] The profile @{username} does not exist on Instagram.")

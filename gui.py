@@ -9,6 +9,7 @@ import queue
 import threading
 import subprocess
 import platform
+import traceback
 from pathlib import Path
 
 import tkinter as tk
@@ -19,6 +20,35 @@ from tkinter.scrolledtext import ScrolledText
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 import download
+
+
+def setup_crash_protection():
+    """Catches any unexpected errors globally and logs them instead of silently closing."""
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        err = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        try:
+            with open(SCRIPT_DIR / "crash.log", "a", encoding="utf-8") as f:
+                f.write(err + "\n" + "=" * 50 + "\n")
+        except Exception:
+            pass
+        try:
+            messagebox.showerror(
+                "Downloader Notice",
+                f"An unexpected error occurred:\n\n{exc_value}\n\nDetails have been logged to crash.log."
+            )
+        except Exception:
+            pass
+
+    sys.excepthook = handle_exception
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = lambda args: handle_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    tk.Tk.report_callback_exception = lambda self, exc, val, tb: handle_exception(exc, val, tb)
+
+
+setup_crash_protection()
 
 
 class DownloaderGUI:
@@ -180,8 +210,14 @@ class DownloaderGUI:
             bg="#FFFFFF",
             relief="solid",
             bd=1,
+            undo=True,
         )
         self.text_input.pack(fill="x", pady=(0, 8))
+
+        # Keyboard shortcuts and context menu
+        self.text_input.bind("<Control-a>", self._select_all_input)
+        self.text_input.bind("<Control-A>", self._select_all_input)
+        self._init_input_context_menu()
 
         # Quick input action buttons
         input_btns_frame = tk.Frame(input_card, bg=self.card_bg)
@@ -346,18 +382,47 @@ class DownloaderGUI:
             )
             self.btn_browse.pack(side="left", padx=(0, 8))
 
+    def _select_all_input(self, event=None):
+        self.text_input.tag_add("sel", "1.0", "end")
+        return "break"
+
+    def _init_input_context_menu(self):
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Cut", command=lambda: self.text_input.event_generate("<<Cut>>"))
+        menu.add_command(label="Copy", command=lambda: self.text_input.event_generate("<<Copy>>"))
+        menu.add_command(label="Paste", command=self._paste_clipboard)
+        menu.add_separator()
+        menu.add_command(label="Select All", command=self._select_all_input)
+        menu.add_command(label="Clear", command=self._clear_input)
+
+        def show_menu(event):
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        self.text_input.bind("<Button-3>", show_menu)
+
     def _paste_clipboard(self):
-        text = download.get_clipboard_text()
-        if text:
+        text = ""
+        # 1. Native Tkinter clipboard (fast, 0ms, zero-subprocess)
+        try:
+            text = self.root.clipboard_get()
+        except Exception:
+            pass
+
+        # 2. System clipboard fallback
+        if not text:
+            try:
+                text = download.get_clipboard_text()
+            except Exception:
+                pass
+
+        if text and text.strip():
             self.text_input.delete("1.0", "end")
             self.text_input.insert("1.0", text.strip())
         else:
-            try:
-                clip = self.root.clipboard_get()
-                self.text_input.delete("1.0", "end")
-                self.text_input.insert("1.0", clip.strip())
-            except Exception:
-                messagebox.showinfo("Clipboard", "Clipboard is empty.")
+            messagebox.showinfo("Clipboard", "Clipboard is empty or does not contain text.")
 
     def _clear_input(self):
         self.text_input.delete("1.0", "end")
@@ -371,40 +436,6 @@ class DownloaderGUI:
         if f:
             self.text_input.delete("1.0", "end")
             self.text_input.insert("1.0", f)
-
-    def _update_cookie_status(self):
-        cookies_file = SCRIPT_DIR / "cookies.txt"
-        if cookies_file.is_file():
-            self.cookie_status_lbl.config(
-                text="✅ Session cookies active (cookies.txt loaded) — Full profile crawling enabled.",
-                fg="#16A34A"
-            )
-        else:
-            self.cookie_status_lbl.config(
-                text="ℹ️ No cookies.txt found — Individual Reels download freely; full creator profiles require cookies.txt.",
-                fg="#64748B"
-            )
-
-    def _import_cookies(self):
-        import shutil
-        f = filedialog.askopenfilename(
-            title="Select cookies.txt exported from your browser",
-            filetypes=[("Text / Cookie Files", "*.txt"), ("All Files", "*.*")],
-            initialdir=str(Path.home() / "Downloads"),
-        )
-        if not f:
-            return
-        try:
-            target = SCRIPT_DIR / "cookies.txt"
-            shutil.copyfile(f, target)
-            self._update_cookie_status()
-            self.log(f"[AUTH] Successfully imported cookies.txt from: {f}")
-            messagebox.showinfo(
-                "Cookies Imported",
-                "Successfully loaded your Instagram cookies!\n\nYou can now bulk download full profiles."
-            )
-        except Exception as e:
-            messagebox.showerror("Import Error", f"Could not copy cookies file: {e}")
 
     def _open_downloads_folder(self):
         dl_folder = SCRIPT_DIR / "downloads"
@@ -498,154 +529,207 @@ class DownloaderGUI:
             messagebox.showinfo("Notice", "No accessible Reels could be downloaded.\n\nPlease check the progress log below for details.")
 
     def _execute_download(self, mode, raw_input):
-        script_dir = SCRIPT_DIR
-        ytdlp_exe = download.resolve_ytdlp(script_dir)
-        cookies_file = script_dir / "cookies.txt"
-        if not cookies_file.is_file():
-            cookies_file = None
+        try:
+            script_dir = SCRIPT_DIR
+            ytdlp_exe = download.resolve_ytdlp(script_dir)
+            cookies_file = script_dir / "cookies.txt"
+            if not cookies_file.is_file():
+                cookies_file = None
 
-        downloads_base = script_dir / "downloads"
+            downloads_base = script_dir / "downloads"
 
-        # 1. Profile Mode
-        if mode == "profile":
-            clean = raw_input.strip()
-            # If user entered multi-token, take first
-            tokens = download.extract_tokens_from_text(clean, script_dir)
-            target = tokens[0] if tokens else clean
-            item = download.classify_link(target, script_dir)
+            # 1. Profile Mode
+            if mode == "profile":
+                clean = raw_input.strip()
+                tokens = download.extract_tokens_from_text(clean, script_dir)
+                target = tokens[0] if tokens else clean
+                item = download.classify_link(target, script_dir)
 
-            username = None
-            if item and item["type"] == "profile":
-                username = item["username"]
-            else:
-                import re
-                m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)", target)
-                if m:
-                    username = m.group(1)
+                # Auto-detect if user accidentally pasted a Reel URL while in Profile mode
+                if item and item.get("type") == "reel":
+                    self.log("[INFO] Detected Reel link in Profile mode. Downloading as direct Reel...")
+                    reels_dest = downloads_base / "reels"
+                    reels_archive = reels_dest / "archive.txt"
+                    download.download_batch_with_ytdlp(
+                        urls=[item["url"]],
+                        dest_folder=reels_dest,
+                        archive_file=reels_archive,
+                        ytdlp_path=ytdlp_exe,
+                        cookies_file=cookies_file,
+                        log_fn=self.log,
+                    )
+                    v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
+                    self.last_download_info = {
+                        "count": len(v_list),
+                        "target_folder": reels_dest,
+                        "error_type": None,
+                    }
+                    return
+
+                username = None
+                if item and item.get("type") == "profile":
+                    username = item["username"]
                 else:
-                    username = clean.lstrip("@").strip()
+                    import re
+                    m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)", target)
+                    if m:
+                        username = m.group(1).strip("._")
+                    else:
+                        username = clean.lstrip("@").strip()
 
-            if not username:
-                self.log("[ERROR] Could not detect Instagram profile username.")
-                return
+                if not username:
+                    self.log("[ERROR] Could not detect Instagram profile username.")
+                    self.last_download_info = {"count": 0, "target_folder": None, "error_type": "no_urls"}
+                    return
 
-            self.log(f"\n==========================================================")
-            self.log(f"       Processing Profile Bulk Download: @{username}")
-            self.log(f"==========================================================")
-            reels = download.extract_profile_reels(username, cookies_file=cookies_file, log_fn=self.log)
+                self.log(f"\n==========================================================")
+                self.log(f"       Processing Profile Bulk Download: @{username}")
+                self.log(f"==========================================================")
+                reels = download.extract_profile_reels(username, cookies_file=cookies_file, log_fn=self.log)
 
-            profile_dest = downloads_base / username
-            profile_archive = profile_dest / "archive.txt"
+                profile_dest = downloads_base / username
+                profile_archive = profile_dest / "archive.txt"
 
-            if reels:
+                if reels:
+                    download.download_batch_with_ytdlp(
+                        urls=reels,
+                        dest_folder=profile_dest,
+                        archive_file=profile_archive,
+                        ytdlp_path=ytdlp_exe,
+                        cookies_file=cookies_file,
+                        log_fn=self.log,
+                    )
+                    v_list = list(profile_dest.glob("*.mp4")) + list(profile_dest.glob("*.webm")) + list(profile_dest.glob("*.mkv"))
+                    self.last_download_info = {
+                        "count": len(v_list),
+                        "target_folder": profile_dest,
+                        "error_type": None,
+                    }
+                else:
+                    if profile_dest.is_dir() and not any(profile_dest.iterdir()):
+                        try:
+                            profile_dest.rmdir()
+                        except Exception:
+                            pass
+
+                    self.last_download_info = {
+                        "count": 0,
+                        "target_folder": None,
+                        "error_type": "empty_profile",
+                    }
+                    self.log(f"\n" + "=" * 58)
+                    self.log(f"   [!] 0 Reels could be downloaded for @{username}")
+                    self.log(f"=" * 58)
+                    self.log(f"Please check:")
+                    self.log(f"  • Ensure the username is spelled correctly and the account is active.")
+                    self.log(f"  • Make sure the account is PUBLIC (private profiles restrict video access).")
+                    self.log(f"  • Verify that the account has video Reels posted.\n")
+
+            # 2. Reels Mode
+            elif mode == "reels":
+                tokens = download.extract_tokens_from_text(raw_input, script_dir)
+                if not tokens:
+                    self.last_download_info = {"count": 0, "target_folder": None, "error_type": "no_urls"}
+                    self.log("[!] No valid URLs found in your input.")
+                    return
+
+                # Auto-detect if user entered a profile URL while in Reels mode
+                first_item = download.classify_link(tokens[0], script_dir)
+                if len(tokens) == 1 and first_item and first_item.get("type") == "profile":
+                    self.log("[INFO] Detected profile URL in Reels mode. Switching automatically to Profile bulk download...")
+                    username = first_item["username"]
+                    reels = download.extract_profile_reels(username, cookies_file=cookies_file, log_fn=self.log)
+                    profile_dest = downloads_base / username
+                    profile_archive = profile_dest / "archive.txt"
+                    if reels:
+                        download.download_batch_with_ytdlp(
+                            urls=reels,
+                            dest_folder=profile_dest,
+                            archive_file=profile_archive,
+                            ytdlp_path=ytdlp_exe,
+                            cookies_file=cookies_file,
+                            log_fn=self.log,
+                        )
+                        v_list = list(profile_dest.glob("*.mp4")) + list(profile_dest.glob("*.webm")) + list(profile_dest.glob("*.mkv"))
+                        self.last_download_info = {
+                            "count": len(v_list),
+                            "target_folder": profile_dest,
+                            "error_type": None,
+                        }
+                    else:
+                        self.last_download_info = {"count": 0, "target_folder": None, "error_type": "empty_profile"}
+                    return
+
+                reels_dest = downloads_base / "reels"
+                reels_archive = reels_dest / "archive.txt"
+                self.log(f"\n==========================================================")
+                self.log(f"        Processing {len(tokens)} Reel URL(s)")
+                self.log(f"==========================================================")
                 download.download_batch_with_ytdlp(
-                    urls=reels,
-                    dest_folder=profile_dest,
-                    archive_file=profile_archive,
+                    urls=tokens,
+                    dest_folder=reels_dest,
+                    archive_file=reels_archive,
                     ytdlp_path=ytdlp_exe,
                     cookies_file=cookies_file,
                     log_fn=self.log,
                 )
-                v_list = list(profile_dest.glob("*.mp4")) + list(profile_dest.glob("*.webm")) + list(profile_dest.glob("*.mkv"))
+                v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
                 self.last_download_info = {
                     "count": len(v_list),
-                    "target_folder": profile_dest,
+                    "target_folder": reels_dest,
                     "error_type": None,
                 }
-            else:
-                # Do NOT create empty folder or run broken yt-dlp profile URL
-                if profile_dest.is_dir() and not any(profile_dest.iterdir()):
-                    try:
-                        profile_dest.rmdir()
-                    except Exception:
-                        pass
 
+            # 3. File Mode
+            elif mode == "file":
+                target_file = raw_input.strip() if raw_input.strip() else str(script_dir / "reels.txt")
+                if not os.path.isfile(target_file):
+                    ex = script_dir / "reels.example.txt"
+                    if ex.is_file():
+                        import shutil
+                        shutil.copyfile(ex, target_file)
+
+                if not os.path.isfile(target_file):
+                    self.log(f"[ERROR] File not found: {target_file}")
+                    return
+
+                self.log(f"[INFO] Reading links from file: {target_file}")
+                try:
+                    with open(target_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    tokens = download.extract_tokens_from_text(content, script_dir)
+                except Exception as e:
+                    self.log(f"[ERROR] Could not read file: {e}")
+                    return
+
+                if not tokens:
+                    self.log("[!] No valid links found in the selected file.")
+                    return
+
+                reels_dest = downloads_base / "reels"
+                reels_archive = reels_dest / "archive.txt"
+                self.log(f"\n==========================================================")
+                self.log(f"        Processing {len(tokens)} Link(s) from File")
+                self.log(f"==========================================================")
+                download.download_batch_with_ytdlp(
+                    urls=tokens,
+                    dest_folder=reels_dest,
+                    archive_file=reels_archive,
+                    ytdlp_path=ytdlp_exe,
+                    cookies_file=cookies_file,
+                    log_fn=self.log,
+                )
+                v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
                 self.last_download_info = {
-                    "count": 0,
-                    "target_folder": None,
-                    "error_type": "empty_profile",
+                    "count": len(v_list),
+                    "target_folder": reels_dest,
+                    "error_type": None,
                 }
-                self.log(f"\n" + "=" * 58)
-                self.log(f"   [!] 0 Reels could be downloaded for @{username}")
-                self.log(f"=" * 58)
-                self.log(f"Please check:")
-                self.log(f"  • Ensure the username is spelled correctly and the account is active.")
-                self.log(f"  • Make sure the account is PUBLIC (private profiles restrict video access).")
-                self.log(f"  • Verify that the account has video Reels posted.\n")
-
-        # 2. Reels Mode
-        elif mode == "reels":
-            tokens = download.extract_tokens_from_text(raw_input, script_dir)
-            if not tokens:
-                self.last_download_info = {"count": 0, "target_folder": None, "error_type": "no_urls"}
-                self.log("[!] No valid URLs found in your input.")
-                return
-
-            reels_dest = downloads_base / "reels"
-            reels_archive = reels_dest / "archive.txt"
-            self.log(f"\n==========================================================")
-            self.log(f"        Processing {len(tokens)} Reel URL(s)")
-            self.log(f"==========================================================")
-            download.download_batch_with_ytdlp(
-                urls=tokens,
-                dest_folder=reels_dest,
-                archive_file=reels_archive,
-                ytdlp_path=ytdlp_exe,
-                cookies_file=cookies_file,
-                log_fn=self.log,
-            )
-            v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
-            self.last_download_info = {
-                "count": len(v_list),
-                "target_folder": reels_dest,
-                "error_type": None,
-            }
-
-        # 3. File Mode
-        elif mode == "file":
-            target_file = raw_input.strip() if raw_input.strip() else str(script_dir / "reels.txt")
-            if not os.path.isfile(target_file):
-                ex = script_dir / "reels.example.txt"
-                if ex.is_file():
-                    import shutil
-                    shutil.copyfile(ex, target_file)
-
-            if not os.path.isfile(target_file):
-                self.log(f"[ERROR] File not found: {target_file}")
-                return
-
-            self.log(f"[INFO] Reading links from file: {target_file}")
-            try:
-                with open(target_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                tokens = download.extract_tokens_from_text(content, script_dir)
-            except Exception as e:
-                self.log(f"[ERROR] Could not read file: {e}")
-                return
-
-            if not tokens:
-                self.log("[!] No valid links found in the selected file.")
-                return
-
-            reels_dest = downloads_base / "reels"
-            reels_archive = reels_dest / "archive.txt"
-            self.log(f"\n==========================================================")
-            self.log(f"        Processing {len(tokens)} Link(s) from File")
-            self.log(f"==========================================================")
-            download.download_batch_with_ytdlp(
-                urls=tokens,
-                dest_folder=reels_dest,
-                archive_file=reels_archive,
-                ytdlp_path=ytdlp_exe,
-                cookies_file=cookies_file,
-                log_fn=self.log,
-            )
-            v_list = list(reels_dest.glob("*.mp4")) + list(reels_dest.glob("*.webm")) + list(reels_dest.glob("*.mkv"))
-            self.last_download_info = {
-                "count": len(v_list),
-                "target_folder": reels_dest,
-                "error_type": None,
-            }
+        except Exception as e:
+            self.log(f"\n[ERROR] An error occurred during download: {e}")
+            import traceback
+            traceback.print_exc()
+            self.last_download_info = {"count": 0, "target_folder": None, "error_type": "error"}
 
 
 def main():
